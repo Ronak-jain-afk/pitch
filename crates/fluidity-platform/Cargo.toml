@@ -1,0 +1,20 @@
+[package]
+name = "fluidity-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fluidity-core = { path = "../fluidity-core" }
+tracing.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+cpal = "0.15"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }

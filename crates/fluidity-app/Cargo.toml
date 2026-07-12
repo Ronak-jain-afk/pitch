@@ -1,0 +1,15 @@
+[package]
+name = "fluidity-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fluidity-core = { path = "../fluidity-core" }
+fluidity-platform = { path = "../fluidity-platform" }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+directories.workspace = true

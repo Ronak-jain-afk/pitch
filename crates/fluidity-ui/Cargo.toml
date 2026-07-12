@@ -1,0 +1,11 @@
+[package]
+name = "fluidity-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fluidity-core = { path = "../fluidity-core" }
+tracing.workspace = true
+tokio.workspace = true
+anyhow.workspace = true

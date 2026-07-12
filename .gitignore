@@ -1,3 +1,6 @@
-# plan files
-FLUIDVOICE_ARCHITECTURE.md
-FLUIDVOICE_PLAN.md
+/target
+**/*.rs.bk
+.env
+.DS_Store
+Thumbs.db
+
