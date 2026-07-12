@@ -105,36 +105,30 @@ impl AsrEngine for WhisperEngine {
             .full(params, samples)
             .map_err(|e| AsrError::TranscriptionFailed(format!("Full transcription: {e}")))?;
 
-        let n_segments: usize = state
-            .full_n_segments()
-            .map_err(|e| AsrError::TranscriptionFailed(format!("Segment count: {e}")))? as usize;
+        let n_segments = state.full_n_segments() as usize;
 
         let mut segments = Vec::with_capacity(n_segments);
 
         let mut full_text = String::new();
 
         for i in 0..n_segments {
-            let idx = i as i32;
-            let text = state
-                .full_get_segment_text(idx)
-                .map_err(|e| AsrError::TranscriptionFailed(format!("Segment text: {e}")))?;
-            let t0 = state
-                .full_get_segment_t0(idx)
-                .map_err(|e| AsrError::TranscriptionFailed(format!("Segment t0: {e}")))?;
-            let t1 = state
-                .full_get_segment_t1(idx)
-                .map_err(|e| AsrError::TranscriptionFailed(format!("Segment t1: {e}")))?;
+            let seg = state.get_segment(i as i32).ok_or_else(|| {
+                AsrError::TranscriptionFailed(format!("Missing segment {i}"))
+            })?;
+            let text = seg.to_str().map_err(|e| {
+                AsrError::TranscriptionFailed(format!("Segment text: {e}"))
+            })?;
 
             segments.push(AsrSegment {
-                start: t0 as f64 / 100.0,
-                end: t1 as f64 / 100.0,
-                text: text.clone(),
+                start: seg.start_timestamp() as f64 / 100.0,
+                end: seg.end_timestamp() as f64 / 100.0,
+                text: text.to_string(),
             });
 
             if !full_text.is_empty() {
                 full_text.push(' ');
             }
-            full_text.push_str(&text);
+            full_text.push_str(text);
         }
 
         Ok(AsrResult { text: full_text, segments })
