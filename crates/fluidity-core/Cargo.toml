@@ -15,7 +15,7 @@ anyhow.workspace = true
 thiserror.workspace = true
 directories.workspace = true
 
-whisper-rs = "0.13"
+whisper-rs = "0.14"
 rubato = "0.16"
 parking_lot = "0.12"
 uuid = { version = "1", features = ["v4"] }
