@@ -1,9 +1,16 @@
+use std::sync::Arc;
+
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use fluidity_core::{AudioCapture, AudioError, RingBuffer};
 
+/// cpal::Stream is !Send. Wrap for our single-threaded usage.
+struct SendStream(Option<cpal::Stream>);
+unsafe impl Send for SendStream {}
+
 /// List all available input devices with descriptions.
 pub fn list_devices() -> Vec<String> {
-    let host = match cpal::default_host() {
+    let host = cpal::default_host();
+    let devices: Vec<String> = match host.input_devices() {
         Ok(devs) => devs
             .filter_map(|d| {
                 let name = d.name().ok()?;
@@ -16,7 +23,7 @@ pub fn list_devices() -> Vec<String> {
                 ))
             })
             .collect(),
-        Err(e) => vec![format!("Error: {e}")],
+        Err(e) => return vec![format!("Error: {e}")],
     };
 
     if devices.is_empty() {
@@ -28,9 +35,8 @@ pub fn list_devices() -> Vec<String> {
 
 /// Windows audio capture via cpal (WASAPI backend).
 pub struct WindowsAudioCapture {
-    host: Option<cpal::Host>,
     device: Option<cpal::Device>,
-    stream: Option<cpal::Stream>,
+    stream: SendStream,
     config: Option<cpal::StreamConfig>,
     callback: Option<Box<dyn FnMut(&[f32]) + Send>>,
     ring: Arc<RingBuffer>,
@@ -39,9 +45,8 @@ pub struct WindowsAudioCapture {
 impl WindowsAudioCapture {
     pub fn new() -> Self {
         Self {
-            host: None,
             device: None,
-            stream: None,
+            stream: SendStream(None),
             config: None,
             callback: None,
             ring: Arc::new(RingBuffer::new(16384)),
@@ -50,8 +55,6 @@ impl WindowsAudioCapture {
 
     fn resolve_device(&mut self, device_id: Option<&str>) -> Result<cpal::Device, AudioError> {
         let host = cpal::default_host();
-
-        let host = self.host.as_ref().unwrap();
 
         let device = if let Some(id) = device_id {
             host.input_devices()
@@ -182,13 +185,13 @@ impl AudioCapture for WindowsAudioCapture {
             .play()
             .map_err(|e| AudioError::StreamError(format!("Play stream: {e}")))?;
 
-        self.stream = Some(stream);
+        self.stream = SendStream(Some(stream));
         tracing::info!("Audio capture started");
         Ok(())
     }
 
     fn stop(&mut self) -> Result<(), AudioError> {
-        if let Some(stream) = self.stream.take() {
+        if let Some(stream) = self.stream.0.take() {
             drop(stream);
         }
         tracing::info!("Audio capture stopped");
