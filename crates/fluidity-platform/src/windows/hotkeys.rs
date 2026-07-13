@@ -40,7 +40,7 @@ impl HotkeyListener for WindowsHotkeyListener {
         unsafe {
             let mut msg = MSG::default();
             while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                TranslateMessage(&msg);
+                let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
         }
@@ -97,17 +97,17 @@ fn modifiers_match(expected: Modifiers) -> bool {
 }
 
 fn has_alt() -> bool {
-    (unsafe { GetAsyncKeyState(0xA4) } & 0x8000) != 0
+    unsafe { GetAsyncKeyState(0xA4) < 0 }
 }
 fn has_ctrl() -> bool {
-    (unsafe { GetAsyncKeyState(0xA2) } & 0x8000) != 0
+    unsafe { GetAsyncKeyState(0xA2) < 0 }
 }
 fn has_shift() -> bool {
-    (unsafe { GetAsyncKeyState(0xA0) } & 0x8000) != 0
+    unsafe { GetAsyncKeyState(0xA0) < 0 }
 }
 fn has_win() -> bool {
-    (unsafe { GetAsyncKeyState(0x5B) } & 0x8000) != 0
-        || (unsafe { GetAsyncKeyState(0x5C) } & 0x8000) != 0
+    unsafe { GetAsyncKeyState(0x5B) < 0 }
+        || unsafe { GetAsyncKeyState(0x5C) < 0 }
 }
 
 fn modifiers_from_bools(alt: bool, ctrl: bool, shift: bool, win: bool) -> Modifiers {
