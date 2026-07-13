@@ -115,10 +115,10 @@ pub fn run_overlay(
         viewport,
         ..Default::default()
     };
-    eframe::run_native(
+    let _ = eframe::run_native(
         "Fluidity Overlay",
         options,
         Box::new(|_cc| Box::new(FluidityApp::new(event_rx))),
-    )?;
+    );
     Ok(())
 }
