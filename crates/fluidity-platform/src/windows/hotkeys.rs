@@ -1,4 +1,4 @@
-use fluidity_core::{hotkey::Modifiers, Hotkey, HotkeyError, HotkeyEvent, HotkeyListener};
+use fluidity_core::{Hotkey, HotkeyError, HotkeyEvent, HotkeyListener};
 
 /// Windows global hotkey listener using SetWindowsHookEx.
 /// Stub for Phase 1 — will be implemented in Phase 2.

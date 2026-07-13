@@ -87,6 +87,7 @@ impl AudioCapture for WindowsAudioCapture {
             "Starting audio capture"
         );
 
+        let sample_format = config.sample_format();
         let stream_config: cpal::StreamConfig = config.into();
         self.config = Some(stream_config.clone());
 
@@ -103,7 +104,6 @@ impl AudioCapture for WindowsAudioCapture {
 
         // Build callback: cpal delivers samples in platform-native format.
         // We normalize to f32 mono and push into the ring buffer.
-        let sample_format = config.sample_format();
         let channels = stream_config.channels as usize;
 
         let stream = match sample_format {
