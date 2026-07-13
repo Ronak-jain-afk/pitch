@@ -9,3 +9,6 @@ fluidity-core = { path = "../fluidity-core" }
 tracing.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
+crossbeam-channel = "0.5"
+egui = "0.27"
+eframe = "0.27"

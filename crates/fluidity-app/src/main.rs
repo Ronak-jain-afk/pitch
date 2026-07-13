@@ -1,6 +1,5 @@
-use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clap::Parser;
@@ -9,7 +8,7 @@ use fluidity_core::{
     audio::{Resampler, RingBuffer},
     config::Config,
     hotkey::{Hotkey, HotkeyEvent, Key, Modifiers},
-    pipeline::{Pipeline, PipelineState},
+    pipeline::{Pipeline, PipelineEvent, PipelineState},
 };
 use tracing::{error, info, warn};
 
@@ -112,13 +111,16 @@ fn run_daemon(model_name: &str) -> anyhow::Result<()> {
     whisper.load(&model_path)?;
     info!("Whisper model loaded");
 
-    let recording = Arc::new(AtomicBool::new(false));
-    let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<HotkeyEvent>(16);
+    let whisper = Arc::new(Mutex::new(whisper));
+    let running = Arc::new(AtomicBool::new(true));
 
-    // Setup hotkey listener (Ctrl+Shift+Space)
+    let (hotkey_tx, hotkey_rx) = crossbeam_channel::bounded::<HotkeyEvent>(16);
+    let (event_tx, event_rx) = crossbeam_channel::unbounded::<PipelineEvent>();
+
+    // Setup hotkey listener (Ctrl+Shift+Space) on its own thread
     let mut hotkey_listener = fluidity_platform::create_hotkey_listener();
     hotkey_listener.set_handler(Box::new(move |event| {
-        cmd_tx.send(event).ok();
+        hotkey_tx.send(event).ok();
     }));
     hotkey_listener
         .register(Hotkey {
@@ -126,66 +128,89 @@ fn run_daemon(model_name: &str) -> anyhow::Result<()> {
             key: Key::Space,
         })
         .map_err(|e| anyhow::anyhow!("Hotkey registration: {e}"))?;
-
-    // Start hotkey listener on its own thread
     std::thread::spawn(move || {
         hotkey_listener.run().ok();
     });
 
-    info!("Daemon ready. Press Ctrl+Shift+Space to record.");
-    info!("Press Ctrl+C to quit.");
-
-    let mut pipeline = Pipeline::new();
-    let mut recorder = RecorderState::new();
-    let running = Arc::new(AtomicBool::new(true));
-
-    // Ctrl+C handler
+    // Worker thread: record → transcribe → insert pipeline
     let r = running.clone();
+    let w = whisper.clone();
+    let ev = event_tx.clone();
     std::thread::spawn(move || {
-        let mut buf = [0u8; 1];
-        let _ = std::io::stdin().read(&mut buf);
-        r.store(false, Ordering::Release);
+        daemon_worker(r, hotkey_rx, ev, w);
     });
 
+    info!("Daemon ready. Press Ctrl+Shift+Space to record.");
+    info!("Overlay window active.");
+
+    // Run UI overlay on the main thread (blocks until exit)
+    let result = fluidity_ui::run_overlay(event_rx);
+    running.store(false, Ordering::Release);
+
+    info!("Daemon stopped");
+    result
+}
+
+fn daemon_worker(
+    running: Arc<AtomicBool>,
+    hotkey_rx: crossbeam_channel::Receiver<HotkeyEvent>,
+    event_tx: crossbeam_channel::Sender<PipelineEvent>,
+    whisper: Arc<Mutex<WhisperEngine>>,
+) {
+    let mut recording = false;
+    let mut recorder = RecorderState::new();
+    // ponytail: no streaming transcription during recording — only final transcribe on hotkey up
+
     while running.load(Ordering::Acquire) {
-        match cmd_rx.recv_timeout(Duration::from_millis(200)) {
+        match hotkey_rx.recv_timeout(Duration::from_millis(200)) {
             Ok(HotkeyEvent::Down { .. }) => {
-                if !recording.load(Ordering::Acquire) {
-                    recording.store(true, Ordering::Release);
-                    info!("Hotkey DOWN — recording");
-                    if let Err(e) = recorder.start() {
-                        error!("Failed to start recording: {e}");
-                    }
-                    start_recording(&mut pipeline);
+                if recording {
+                    continue;
+                }
+                recording = true;
+                let _ = event_tx.send(PipelineEvent::StateChanged(PipelineState::Recording {
+                    accumulated_samples: 0,
+                    streaming_text: String::new(),
+                    started_at: std::time::Instant::now(),
+                }));
+                if let Err(e) = recorder.start() {
+                    let _ = event_tx.send(PipelineEvent::Error(e.to_string()));
                 }
             }
             Ok(HotkeyEvent::Up { .. }) => {
-                if recording.load(Ordering::Acquire) {
-                    recording.store(false, Ordering::Release);
-                    info!("Hotkey UP — transcribing & inserting");
-                    match stop_and_transcribe(&mut pipeline, &mut recorder, &whisper) {
-                        Ok(text) => {
-                            if !text.is_empty() {
-                                let inserter = fluidity_platform::create_text_inserter();
-                                if let Err(e) = inserter.insert_with_fallback(&text) {
-                                    error!("Text insertion failed: {e}");
-                                } else {
-                                    info!("Inserted {} chars", text.len());
-                                }
+                if !recording {
+                    continue;
+                }
+                recording = false;
+                let _ = event_tx.send(PipelineEvent::StateChanged(PipelineState::Transcribing));
+                let samples = recorder.stop_and_drain();
+                if samples.len() >= 16000 {
+                    let result = {
+                        let engine = whisper.lock().unwrap();
+                        engine.transcribe(&samples)
+                    };
+                    match result {
+                        Ok(r) => {
+                            let _ = event_tx
+                                .send(PipelineEvent::StateChanged(PipelineState::Inserting {
+                                    text: r.text.clone(),
+                                }));
+                            let inserter = fluidity_platform::create_text_inserter();
+                            if let Err(e) = inserter.insert_with_fallback(&r.text) {
+                                let _ = event_tx.send(PipelineEvent::Error(e.to_string()));
                             }
                         }
-                        Err(e) => error!("Transcription/insertion failed: {e}"),
+                        Err(e) => {
+                            let _ = event_tx.send(PipelineEvent::Error(e.to_string()));
+                        }
                     }
-                    pipeline.transition_to(PipelineState::Idle);
                 }
+                let _ = event_tx.send(PipelineEvent::StateChanged(PipelineState::Idle));
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
             Err(_) => break,
         }
     }
-
-    info!("Daemon stopped");
-    Ok(())
 }
 
 // --- Daemon recording helpers ---
@@ -233,39 +258,6 @@ impl RecorderState {
         self.ring.pop(&mut samples);
         samples
     }
-}
-
-fn start_recording(pipeline: &mut Pipeline) {
-    pipeline.transition_to(PipelineState::Recording {
-        accumulated_samples: 0,
-        streaming_text: String::new(),
-        started_at: std::time::Instant::now(),
-    });
-}
-
-fn stop_and_transcribe(
-    pipeline: &mut Pipeline,
-    recorder: &mut RecorderState,
-    whisper: &WhisperEngine,
-) -> Result<String, anyhow::Error> {
-    let samples = recorder.stop_and_drain();
-
-    if samples.len() < 16000 {
-        warn!("Audio too short ({} samples)", samples.len());
-        pipeline.transition_to(PipelineState::Error {
-            message: "Audio too short".into(),
-            recoverable: true,
-        });
-        return Ok(String::new());
-    }
-
-    pipeline.transition_to(PipelineState::Transcribing);
-    let result = whisper.transcribe(&samples)?;
-    pipeline.transition_to(PipelineState::Inserting {
-        text: result.text.clone(),
-    });
-
-    Ok(result.text)
 }
 
 // --- CLI record subcommand (Phase 1) ---
