@@ -9,6 +9,7 @@ use fluidity_core::{
     config::Config,
     hotkey::{Hotkey, HotkeyEvent, Key, Modifiers},
     pipeline::{Pipeline, PipelineEvent, PipelineState},
+    LlmClient,
 };
 use tracing::{info, warn};
 
@@ -37,7 +38,7 @@ enum Command {
     },
     /// List available audio input devices
     ListDevices,
-    /// Run as background daemon with hotkey and tray icon
+    /// Run as background daemon with hotkey and overlay
     Daemon {
         #[arg(short, long, default_value = "tiny")]
         model: String,
@@ -59,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Record { duration, device, model } => run_record(duration, device, &model).await?,
         Command::Download { model } => run_download(&model).await?,
         Command::ListDevices => run_list_devices()?,
-        Command::Daemon { model } => run_daemon(&model)?,
+        Command::Daemon { model } => run_daemon(&model).await?,
     }
 
     Ok(())
@@ -94,16 +95,27 @@ fn run_list_devices() -> anyhow::Result<()> {
     Ok(())
 }
 
-// --- Daemon mode: hotkey → record → transcribe → insert text ---
+// --- Daemon mode: hotkey → record → transcribe → post-process → (LLM) → insert ---
 
-fn run_daemon(model_name: &str) -> anyhow::Result<()> {
+async fn run_daemon(model_name: &str) -> anyhow::Result<()> {
+    let config_path = Config::config_path();
+    let config = Config::load(&config_path);
+
+    let model_name = &config.whisper.model_name;
     let cache_dir = Config::model_cache_dir();
     let model_mgr = ModelManager::new(cache_dir.clone());
     let model_path = model_mgr.model_path(model_name);
 
     if !model_path.exists() {
-        info!("Model {model_name} not cached. Run `fluidity download {model_name}` first.");
-        return Ok(());
+        info!("Model {model_name} not cached, downloading...");
+        model_mgr
+            .download(model_name, |downloaded, total| {
+                if total > 0 {
+                    let pct = (downloaded as f64 / total as f64) * 100.0;
+                    info!("Download: {pct:.1}% ({downloaded}/{total})");
+                }
+            })
+            .await?;
     }
 
     info!("Loading Whisper model...");
@@ -113,6 +125,30 @@ fn run_daemon(model_name: &str) -> anyhow::Result<()> {
 
     let whisper = Arc::new(Mutex::new(whisper));
     let running = Arc::new(AtomicBool::new(true));
+    let config = Arc::new(config);
+
+    // Build LLM client if enabled
+    let llm_client = if config.llm.enabled {
+        let base_url = config.llm.base_url.clone().unwrap_or_default();
+        let api_key = config.llm.api_key.clone().unwrap_or_default();
+        let model = config.llm.model.clone().unwrap_or_default();
+        if base_url.is_empty() || api_key.is_empty() {
+            info!("LLM enabled but base_url or api_key missing, skipping");
+            None
+        } else {
+            let llm_config = fluidity_core::LlmConfig {
+                base_url,
+                api_key,
+                model,
+                temperature: None,
+                max_tokens: None,
+            };
+            Some(LlmClient::new(llm_config))
+        }
+    } else {
+        None
+    };
+    let llm_client = Arc::new(llm_client);
 
     let (hotkey_tx, hotkey_rx) = crossbeam_channel::bounded::<HotkeyEvent>(16);
     let (event_tx, event_rx) = crossbeam_channel::unbounded::<PipelineEvent>();
@@ -132,12 +168,15 @@ fn run_daemon(model_name: &str) -> anyhow::Result<()> {
         hotkey_listener.run().ok();
     });
 
-    // Worker thread: record → transcribe → insert pipeline
+    // Worker thread: record → transcribe → post-process → LLM → insert
     let r = running.clone();
     let w = whisper.clone();
     let ev = event_tx.clone();
+    let cfg = config.clone();
+    let llm = llm_client.clone();
+    let rt_handle = tokio::runtime::Handle::current();
     std::thread::spawn(move || {
-        daemon_worker(r, hotkey_rx, ev, w);
+        daemon_worker(r, hotkey_rx, ev, w, cfg, llm, rt_handle);
     });
 
     info!("Daemon ready. Press Ctrl+Shift+Space to record.");
@@ -156,10 +195,19 @@ fn daemon_worker(
     hotkey_rx: crossbeam_channel::Receiver<HotkeyEvent>,
     event_tx: crossbeam_channel::Sender<PipelineEvent>,
     whisper: Arc<Mutex<WhisperEngine>>,
+    config: Arc<Config>,
+    llm_client: Arc<Option<LlmClient>>,
+    rt_handle: tokio::runtime::Handle,
 ) {
     let mut recording = false;
     let mut recorder = RecorderState::new();
-    // ponytail: no streaming transcription during recording — only final transcribe on hotkey up
+
+    let dict: Vec<(String, String)> = config
+        .processing
+        .dictionary
+        .iter()
+        .map(|e| (e.from.clone(), e.to.clone()))
+        .collect();
 
     while running.load(Ordering::Acquire) {
         match hotkey_rx.recv_timeout(Duration::from_millis(200)) {
@@ -182,29 +230,73 @@ fn daemon_worker(
                     continue;
                 }
                 recording = false;
+
+                // Transcribe
                 let _ = event_tx.send(PipelineEvent::StateChanged(PipelineState::Transcribing));
                 let samples = recorder.stop_and_drain();
-                if samples.len() >= 16000 {
-                    let result = {
-                        let engine = whisper.lock().unwrap();
-                        engine.transcribe(&samples)
-                    };
+                let mut text = if samples.len() >= 16000 {
+                    let result = { whisper.lock().unwrap().transcribe(&samples) };
                     match result {
-                        Ok(r) => {
-                            let _ = event_tx
-                                .send(PipelineEvent::StateChanged(PipelineState::Inserting {
-                                    text: r.text.clone(),
-                                }));
-                            let inserter = fluidity_platform::create_text_inserter();
-                            if let Err(e) = inserter.insert_with_fallback(&r.text) {
-                                let _ = event_tx.send(PipelineEvent::Error(e.to_string()));
-                            }
-                        }
+                        Ok(r) => r.text,
                         Err(e) => {
                             let _ = event_tx.send(PipelineEvent::Error(e.to_string()));
+                            let _ = event_tx
+                                .send(PipelineEvent::StateChanged(PipelineState::Idle));
+                            continue;
+                        }
+                    }
+                } else {
+                    let _ = event_tx
+                        .send(PipelineEvent::StateChanged(PipelineState::Idle));
+                    continue;
+                };
+
+                // Post-process
+                if config.processing.fillers_enabled || !dict.is_empty() {
+                    text = fluidity_core::full_pipeline(&text, &dict);
+                }
+
+                // LLM enhancement
+                if let Some(client) = llm_client.as_ref() {
+                    let _ = event_tx.send(PipelineEvent::StateChanged(
+                        PipelineState::Enhancing {
+                            original_text: text.clone(),
+                            enhanced_text: None,
+                            provider_label: "LLM".into(),
+                        },
+                    ));
+                    let system_prompt = config
+                        .llm
+                        .system_prompt
+                        .as_deref()
+                        .unwrap_or("Clean up the following transcribed speech into polished text, fixing punctuation and grammar but preserving the speaker's intent and style.");
+
+                    let enhanced = rt_handle.block_on(async {
+                        client.enhance(&text, system_prompt).await
+                    });
+
+                    match enhanced {
+                        Ok(e) => {
+                            // ponytail: overwrite original text with enhanced version
+                            text = e;
+                        }
+                        Err(err) => {
+                            let _ = event_tx
+                                .send(PipelineEvent::Error(format!("LLM enhancement failed: {err}. Using original text.")));
+                            // proceed with original text
                         }
                     }
                 }
+
+                // Insert
+                let _ = event_tx.send(PipelineEvent::StateChanged(PipelineState::Inserting {
+                    text: text.clone(),
+                }));
+                let inserter = fluidity_platform::create_text_inserter();
+                if let Err(e) = inserter.insert_with_fallback(&text) {
+                    let _ = event_tx.send(PipelineEvent::Error(e.to_string()));
+                }
+
                 let _ = event_tx.send(PipelineEvent::StateChanged(PipelineState::Idle));
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
