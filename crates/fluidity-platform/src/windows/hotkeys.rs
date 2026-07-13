@@ -53,7 +53,7 @@ impl HotkeyListener for WindowsHotkeyListener {
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 {
         let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
-        let vk = kb.vkCode.0 as u16;
+        let vk = kb.vkCode as u16;
 
         let is_down = wparam.0 as u32 == WM_KEYDOWN || wparam.0 as u32 == WM_SYSKEYDOWN;
         let is_up = wparam.0 as u32 == WM_KEYUP || wparam.0 as u32 == WM_SYSKEYUP;
@@ -132,10 +132,56 @@ fn modifiers_from_bools(alt: bool, ctrl: bool, shift: bool, win: bool) -> Modifi
 }
 
 fn vk_to_key(vk: u16) -> Option<Key> {
+    // Ranges A-Z, 0-9, F1-F12 — Key is an enum without Add impl, so map explicitly
     Some(match vk {
-        0x41..=0x5A => Key::KeyA + (vk - 0x41) as u8,
-        0x30..=0x39 => Key::Key0 + (vk - 0x30) as u8,
-        0x70..=0x7B => Key::F1 + (vk - 0x70) as u8,
+        0x41 => Key::KeyA,
+        0x42 => Key::KeyB,
+        0x43 => Key::KeyC,
+        0x44 => Key::KeyD,
+        0x45 => Key::KeyE,
+        0x46 => Key::KeyF,
+        0x47 => Key::KeyG,
+        0x48 => Key::KeyH,
+        0x49 => Key::KeyI,
+        0x4A => Key::KeyJ,
+        0x4B => Key::KeyK,
+        0x4C => Key::KeyL,
+        0x4D => Key::KeyM,
+        0x4E => Key::KeyN,
+        0x4F => Key::KeyO,
+        0x50 => Key::KeyP,
+        0x51 => Key::KeyQ,
+        0x52 => Key::KeyR,
+        0x53 => Key::KeyS,
+        0x54 => Key::KeyT,
+        0x55 => Key::KeyU,
+        0x56 => Key::KeyV,
+        0x57 => Key::KeyW,
+        0x58 => Key::KeyX,
+        0x59 => Key::KeyY,
+        0x5A => Key::KeyZ,
+        0x30 => Key::Key0,
+        0x31 => Key::Key1,
+        0x32 => Key::Key2,
+        0x33 => Key::Key3,
+        0x34 => Key::Key4,
+        0x35 => Key::Key5,
+        0x36 => Key::Key6,
+        0x37 => Key::Key7,
+        0x38 => Key::Key8,
+        0x39 => Key::Key9,
+        0x70 => Key::F1,
+        0x71 => Key::F2,
+        0x72 => Key::F3,
+        0x73 => Key::F4,
+        0x74 => Key::F5,
+        0x75 => Key::F6,
+        0x76 => Key::F7,
+        0x77 => Key::F8,
+        0x78 => Key::F9,
+        0x79 => Key::F10,
+        0x7A => Key::F11,
+        0x7B => Key::F12,
         0x20 => Key::Space,
         0x0D => Key::Enter,
         0x1B => Key::Escape,

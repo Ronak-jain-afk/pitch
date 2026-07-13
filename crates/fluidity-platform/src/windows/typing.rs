@@ -19,8 +19,9 @@ impl TextInserter for WindowsTextInserter {
 }
 
 fn enigo_type(text: &str) -> Result<(), InsertError> {
-    use enigo::Enigo;
-    let mut e = Enigo::new();
+    use enigo::{Enigo, Settings};
+    let mut e = Enigo::new(&Settings::default())
+        .map_err(|e| InsertError::TypeFailed(format!("enigo init: {e}")))?;
     e.text(text)
         .map_err(|e| InsertError::TypeFailed(format!("enigo: {e}")))
 }
