@@ -10,7 +10,7 @@ use fluidity_core::{
     hotkey::{Hotkey, HotkeyEvent, Key, Modifiers},
     pipeline::{Pipeline, PipelineEvent, PipelineState},
 };
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 #[derive(Parser)]
 #[command(name = "fluidity", about = "Voice dictation tool", version)]
