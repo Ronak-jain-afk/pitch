@@ -1,6 +1,7 @@
 use std::sync::{Mutex, OnceLock};
 
-use fluidity_core::{Hotkey, HotkeyError, HotkeyEvent, HotkeyListener, Key, Modifiers};
+use fluidity_core::hotkey::{Hotkey, HotkeyError, HotkeyEvent, HotkeyListener, Key, Modifiers};
+use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -52,12 +53,12 @@ impl HotkeyListener for WindowsHotkeyListener {
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 {
         let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
-        let vk = kb.vkCode;
+        let vk = kb.vkCode.0 as u16;
 
         let is_down = wparam.0 as u32 == WM_KEYDOWN || wparam.0 as u32 == WM_SYSKEYDOWN;
         let is_up = wparam.0 as u32 == WM_KEYUP || wparam.0 as u32 == WM_SYSKEYUP;
 
-        if (is_down || is_up) && vk != VK_MENU && vk != VK_CONTROL && !is_modifier(vk) {
+        if (is_down || is_up) && !is_modifier(vk) {
             if let Some(state) = HK_STATE.get() {
                 if let Ok(s) = state.lock() {
                     if let Some(ref hotkey) = s.hotkey {
@@ -76,15 +77,14 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
             }
         }
     }
-    unsafe { CallNextHookEx(HHOOK::default(), code, wparam, lparam) }
+    CallNextHookEx(HHOOK::default(), code, wparam, lparam)
 }
 
-fn is_modifier(vk: VIRTUAL_KEY) -> bool {
-    vk == VK_LMENU || vk == VK_RMENU || vk == VK_LCONTROL || vk == VK_RCONTROL
-        || vk == VK_LSHIFT || vk == VK_RSHIFT || vk == VK_LWIN || vk == VK_RWIN
+fn is_modifier(vk: u16) -> bool {
+    matches!(vk, 0xA4 | 0xA5 | 0xA2 | 0xA3 | 0xA0 | 0xA1 | 0x5B | 0x5C)
 }
 
-fn key_matches(hotkey: &Hotkey, vk: VIRTUAL_KEY) -> bool {
+fn key_matches(hotkey: &Hotkey, vk: u16) -> bool {
     vk_to_key(vk).map(|k| k == hotkey.key).unwrap_or(false)
 }
 
@@ -97,17 +97,17 @@ fn modifiers_match(expected: Modifiers) -> bool {
 }
 
 fn has_alt() -> bool {
-    (unsafe { GetAsyncKeyState(VK_MENU.0 as i32) } & 0x8000) != 0
+    (unsafe { GetAsyncKeyState(0xA4) } & 0x8000) != 0
 }
 fn has_ctrl() -> bool {
-    (unsafe { GetAsyncKeyState(VK_CONTROL.0 as i32) } & 0x8000) != 0
+    (unsafe { GetAsyncKeyState(0xA2) } & 0x8000) != 0
 }
 fn has_shift() -> bool {
-    (unsafe { GetAsyncKeyState(VK_SHIFT.0 as i32) } & 0x8000) != 0
+    (unsafe { GetAsyncKeyState(0xA0) } & 0x8000) != 0
 }
 fn has_win() -> bool {
-    (unsafe { GetAsyncKeyState(VK_LWIN.0 as i32) } & 0x8000) != 0
-        || (unsafe { GetAsyncKeyState(VK_RWIN.0 as i32) } & 0x8000) != 0
+    (unsafe { GetAsyncKeyState(0x5B) } & 0x8000) != 0
+        || (unsafe { GetAsyncKeyState(0x5C) } & 0x8000) != 0
 }
 
 fn modifiers_from_bools(alt: bool, ctrl: bool, shift: bool, win: bool) -> Modifiers {
@@ -131,39 +131,39 @@ fn modifiers_from_bools(alt: bool, ctrl: bool, shift: bool, win: bool) -> Modifi
     }
 }
 
-fn vk_to_key(vk: VIRTUAL_KEY) -> Option<Key> {
-    Some(match vk.0 as u16 {
-        0x41..=0x5A => Key::KeyA + (vk.0 - 0x41) as u8,
-        0x30..=0x39 => Key::Key0 + (vk.0 - 0x30) as u8,
-        0x70..=0x7B => Key::F1 + (vk.0 - 0x70) as u8,
-        VK_SPACE => Key::Space,
-        VK_RETURN => Key::Enter,
-        VK_ESCAPE => Key::Escape,
-        VK_TAB => Key::Tab,
-        VK_BACK => Key::Backspace,
-        VK_LMENU => Key::LeftAlt,
-        VK_RMENU => Key::RightAlt,
-        VK_LCONTROL => Key::LeftControl,
-        VK_RCONTROL => Key::RightControl,
-        VK_LSHIFT => Key::LeftShift,
-        VK_RSHIFT => Key::RightShift,
-        VK_LWIN => Key::LeftWin,
-        VK_RWIN => Key::RightWin,
-        VK_CAPITAL => Key::CapsLock,
-        VK_OEM_COMMA => Key::Comma,
-        VK_OEM_PERIOD => Key::Period,
-        VK_OEM_2 => Key::Slash,
-        VK_OEM_1 => Key::Semicolon,
-        VK_OEM_7 => Key::Quote,
-        VK_OEM_4 => Key::BracketLeft,
-        VK_OEM_6 => Key::BracketRight,
-        VK_OEM_5 => Key::Backslash,
-        VK_OEM_MINUS => Key::Minus,
-        VK_OEM_PLUS => Key::Equal,
-        VK_OEM_3 => Key::Grave,
-        VK_LBUTTON => Key::MouseLeft,
-        VK_RBUTTON => Key::MouseRight,
-        VK_MBUTTON => Key::MouseMiddle,
+fn vk_to_key(vk: u16) -> Option<Key> {
+    Some(match vk {
+        0x41..=0x5A => Key::KeyA + (vk - 0x41) as u8,
+        0x30..=0x39 => Key::Key0 + (vk - 0x30) as u8,
+        0x70..=0x7B => Key::F1 + (vk - 0x70) as u8,
+        0x20 => Key::Space,
+        0x0D => Key::Enter,
+        0x1B => Key::Escape,
+        0x09 => Key::Tab,
+        0x08 => Key::Backspace,
+        0xA4 => Key::LeftAlt,
+        0xA5 => Key::RightAlt,
+        0xA2 => Key::LeftControl,
+        0xA3 => Key::RightControl,
+        0xA0 => Key::LeftShift,
+        0xA1 => Key::RightShift,
+        0x5B => Key::LeftWin,
+        0x5C => Key::RightWin,
+        0x14 => Key::CapsLock,
+        0xBC => Key::Comma,
+        0xBE => Key::Period,
+        0xBF => Key::Slash,
+        0xBA => Key::Semicolon,
+        0xDE => Key::Quote,
+        0xDB => Key::BracketLeft,
+        0xDD => Key::BracketRight,
+        0xDC => Key::Backslash,
+        0xBD => Key::Minus,
+        0xBB => Key::Equal,
+        0xC0 => Key::Grave,
+        0x01 => Key::MouseLeft,
+        0x02 => Key::MouseRight,
+        0x04 => Key::MouseMiddle,
         _ => return None,
     })
 }
