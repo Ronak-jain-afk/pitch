@@ -106,8 +106,7 @@ fn has_shift() -> bool {
     unsafe { GetAsyncKeyState(0xA0) < 0 }
 }
 fn has_win() -> bool {
-    unsafe { GetAsyncKeyState(0x5B) < 0 }
-        || unsafe { GetAsyncKeyState(0x5C) < 0 }
+    unsafe { GetAsyncKeyState(0x5B) < 0 || GetAsyncKeyState(0x5C) < 0 }
 }
 
 fn modifiers_from_bools(alt: bool, ctrl: bool, shift: bool, win: bool) -> Modifiers {
