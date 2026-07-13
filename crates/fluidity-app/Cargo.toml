@@ -13,3 +13,5 @@ tokio.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 directories.workspace = true
+tray-icon = "0.4"
+crossbeam-channel = "0.5"
